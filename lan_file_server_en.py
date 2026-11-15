@@ -127,6 +127,8 @@ header h1{font-size:19px}
 .size{color:#999;font-size:13px;white-space:nowrap}
 .dl{background:#667eea;color:#fff;text-decoration:none;padding:6px 14px;border-radius:16px;font-size:13px;white-space:nowrap}
 .dl:hover{background:#5568d3}
+.vw{background:#fff;color:#667eea;border:1px solid #667eea;text-decoration:none;padding:5px 13px;border-radius:16px;font-size:13px;white-space:nowrap;display:inline-block}
+.vw:hover{background:#eef1fe}
 .empty{text-align:center;color:#999;padding:48px 16px;font-size:14px}
 @media (max-width:600px){
 .item{flex-wrap:wrap}
@@ -186,6 +188,25 @@ def format_size(n):
             return "{:.1f} {}".format(n, unit)
 
 
+PREVIEW_EXTS = {
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp",
+    ".mp4", ".webm", ".ogg", ".mov",
+    ".mp3", ".wav", ".flac",
+    ".pdf",
+    ".txt", ".md", ".log", ".py", ".json", ".csv", ".ini", ".conf",
+    ".xml", ".yaml", ".yml", ".cfg", ".sh", ".bat",
+}
+
+TEXT_EXTS = {
+    ".txt", ".md", ".log", ".py", ".json", ".csv", ".ini", ".conf",
+    ".xml", ".yaml", ".yml", ".cfg", ".sh", ".bat",
+}
+
+
+def is_previewable(name):
+    return os.path.splitext(name)[1].lower() in PREVIEW_EXTS
+
+
 def build_breadcrumbs(rel):
     parts = [p for p in rel.split("/") if p]
     out = ['<a href="/">&#127968; Home</a>']
@@ -198,7 +219,7 @@ def build_breadcrumbs(rel):
     return "".join(out)
 
 
-def build_items(base, rel):
+def build_items(base, rel, allow_view):
     try:
         entries = []
         for name in os.listdir(base):
@@ -223,18 +244,22 @@ def build_items(base, rel):
                 '<span class="name"><a href="/?p={0}">{1}</a></span>'
                 '<span class="size">Folder</span></div>'.format(enc, html.escape(name)))
         else:
+            view = ""
+            if allow_view and is_previewable(name):
+                view = ('<a class="vw" href="/view/{0}" target="_blank">View</a>').format(enc)
             rows.append(
                 '<div class="item"><span class="icon">&#128196;</span>'
                 '<span class="name"><a href="/files/{0}">{1}</a></span>'
-                '<span class="size">{2}</span>'
-                '<a class="dl" href="/files/{0}">Download</a></div>'.format(enc, html.escape(name), size))
+                '<span class="size">{2}</span>{3}'
+                '<a class="dl" href="/files/{0}">Download</a></div>'.format(enc, html.escape(name), size, view))
     return "".join(rows)
 
 
 class FileHandler(BaseHTTPRequestHandler):
-    server_version = "LanFileServer/1.1.0"
+    server_version = "LanFileServer/1.2.0"
     root_dir = ""
     require_auth = False
+    allow_view = True
     username = ""
     password = ""
     sessions = {}
@@ -309,11 +334,23 @@ class FileHandler(BaseHTTPRequestHandler):
                 return
             page = LIST_PAGE
             page = page.replace("__BREADCRUMBS__", build_breadcrumbs(rel))
-            page = page.replace("__ITEMS__", build_items(target, rel))
+            page = page.replace("__ITEMS__", build_items(target, rel, self.allow_view))
             page = page.replace("__CUR__", html.escape(rel if rel else "/"))
             page = page.replace("__LOGOUT__",
                                 '<a class="logout" href="/logout">Log Out</a>' if self.require_auth else "")
             self._send_html(200, page)
+            return
+
+        if path.startswith("/view/"):
+            rel = path[len("/view/"):].strip("/")
+            if not rel:
+                self._send_html(404, NOT_FOUND_PAGE)
+                return
+            target = self._safe_path(rel)
+            if target is None or not os.path.isfile(target):
+                self._send_html(404, NOT_FOUND_PAGE)
+                return
+            self._stream_file(target, inline=(self.allow_view and is_previewable(rel)))
             return
 
         if path.startswith("/files/"):
@@ -330,19 +367,23 @@ class FileHandler(BaseHTTPRequestHandler):
 
         self._send_html(404, NOT_FOUND_PAGE)
 
-    def _stream_file(self, target):
+    def _stream_file(self, target, inline=False):
         try:
             size = os.path.getsize(target)
         except OSError:
             self._send_html(404, NOT_FOUND_PAGE)
             return
-        ctype = mimetypes.guess_type(target)[0] or "application/octet-stream"
         fname = os.path.basename(target)
+        if inline and os.path.splitext(fname)[1].lower() in TEXT_EXTS:
+            ctype = "text/plain; charset=utf-8"
+        else:
+            ctype = mimetypes.guess_type(target)[0] or "application/octet-stream"
+        disposition = "inline" if inline else "attachment"
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(size))
         self.send_header("Content-Disposition",
-                         "attachment; filename*=UTF-8''{}".format(urllib.parse.quote(fname)))
+                         "{}; filename*=UTF-8''{}".format(disposition, urllib.parse.quote(fname)))
         self.end_headers()
         try:
             with open(target, "rb") as f:
@@ -410,12 +451,13 @@ def main():
             sg.Text("Password:"),
             sg.Input(key="-PASS-", size=(12, 1), password_char="*"),
             sg.Checkbox("Enable Password Protection", key="-ENABLE-PASS-", default=False),
+            sg.Checkbox("Allow Online Preview", key="-ENABLE-VIEW-", default=True),
         ],
         [sg.Text("Log:", font=("Microsoft YaHei", 10, "bold"))],
         [sg.Multiline("", key="-LOG-", size=(70, 12), disabled=True, autoscroll=True)],
     ]
 
-    window = sg.Window("LAN File Server V1.1.0", layout, finalize=True)
+    window = sg.Window("LAN File Server V1.2.0", layout, finalize=True)
 
     server_thread = None
     http_server = None
@@ -454,6 +496,7 @@ def main():
                 continue
 
             use_pass = values["-ENABLE-PASS-"]
+            use_view = values["-ENABLE-VIEW-"]
             username = values["-USER-"].strip()
             password = values["-PASS-"]
             if use_pass and (not username or not password):
@@ -464,6 +507,7 @@ def main():
 
             FileHandler.root_dir = folder
             FileHandler.require_auth = use_pass
+            FileHandler.allow_view = use_view
             FileHandler.username = username
             FileHandler.password = password
             FileHandler.sessions = {}
@@ -483,6 +527,8 @@ def main():
             log("Sharing started!")
             if use_pass:
                 log("Password protection enabled")
+            if not use_view:
+                log("Online preview disabled")
             log("Local access: http://127.0.0.1:{}".format(port))
             log("LAN access: http://{}:{}".format(local_ip, port))
 
@@ -518,7 +564,7 @@ def main():
 
         elif event == "-ABOUT-":
             sg.popup(
-                "LAN File Server V1.1.0\n"
+                "LAN File Server V1.2.0\n"
                 "A simple LAN file sharing tool\n"
                 "Feedback email: 77070689@qq.com\n"
                 "For LAN use only. Do not expose to the public internet",
