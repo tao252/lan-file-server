@@ -5,7 +5,7 @@
 ## 功能特性
 
 - 选择任意文件夹，一键共享（底层使用 Python 内置 http.server）
-- 自动获取本机局域网 IP，显示本机与局域网访问地址
+- 自动检测本机可用的局域网 IP 并在下拉框列出，可手动切换；自动排除 VMware / VirtualBox / WSL / 加速器 TUN / VPN 等虚拟网卡，避免显示对方连不上的地址
 - 网页端自带现代化登录页与文件浏览页，电脑浏览器访问友好（不再使用 http.server 原生目录列表）；手机 / 平板适配将在后续版本完善
 - 可选密码保护：勾选"启用密码保护"并设置用户名密码，访问需先登录
 - 在线预览（浏览）：主机勾选"允许在线浏览"后，浏览端可在浏览器内直接打开图片、视频、音频、PDF、文本等文件，无需先下载；取消勾选则所有文件只允许下载
@@ -23,9 +23,10 @@
 
 1. 点"浏览 / Browse"选择要共享的文件夹
 2. 端口默认 8080，可自行修改
-3. 想加密码就填写用户名、密码，并勾选"启用密码保护"（不勾选则局域网内无需登录直接访问）
-4. "允许在线浏览"默认勾选：对方可在线预览图片 / 视频 / 音频 / PDF / 文本；若只想让对方下载，取消该勾选
-5. 点"启动共享 / Start Sharing"，把日志框里显示的局域网地址发给对方；对方用浏览器打开，输入账号密码（如已启用）即可浏览、预览或下载
+3. 局域网 IP 下拉框会自动选中可用地址；若电脑有多张网卡（有线、无线、VPN），可手动切换成正确的那个
+4. 想加密码就填写用户名、密码，并勾选"启用密码保护"（不勾选则局域网内无需登录直接访问）
+5. "允许在线浏览"默认勾选：对方可在线预览图片 / 视频 / 音频 / PDF / 文本；若只想让对方下载，取消该勾选
+6. 点"启动共享 / Start Sharing"，把日志框里显示的局域网地址发给对方；对方用浏览器打开，输入账号密码（如已启用）即可浏览、预览或下载
 
 ### 方式二：从源码运行
 
@@ -39,8 +40,8 @@ python lan_file_server_en.py  # 英文版
 
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --windowed --name "LAN_File_Server_CN_v1.2.0" --hidden-import=http.server Untitled-1.py
-pyinstaller --onefile --windowed --name "LAN_File_Server_EN_v1.2.0" --hidden-import=http.server lan_file_server_en.py
+pyinstaller --onefile --windowed --name "LAN_File_Server_CN_v1.3.0" --hidden-import=http.server Untitled-1.py
+pyinstaller --onefile --windowed --name "LAN_File_Server_EN_v1.3.0" --hidden-import=http.server lan_file_server_en.py
 ```
 
 ## 注意事项
@@ -50,6 +51,7 @@ pyinstaller --onefile --windowed --name "LAN_File_Server_EN_v1.2.0" --hidden-imp
 - 网页使用 HTTP 明文传输，同一网络下抓包可见账号密码，请勿在公共 WiFi 环境共享敏感文件
 - 出于安全考虑，HTML / SVG 文件不做在线内联预览，只提供下载；可预览类型为图片、视频、音频、PDF 及常见文本 / 代码文件
 - 第一次启动时 Windows 防火墙会弹窗，请勾选"专用网络 / 局域网"，否则其他设备无法访问
+- 在老旧浏览器（如 IE11）中可正常浏览和下载，但排版细节不如 Chrome / Edge 等现代浏览器
 
 ## 反馈
 
@@ -57,4 +59,4 @@ Bug 反馈邮箱：77070689@qq.com
 
 ## 版本
 
-V1.2.0
+V1.3.0

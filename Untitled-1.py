@@ -1,7 +1,9 @@
 import os
+import re
 import sys
 import socket
 import secrets
+import subprocess
 import hmac
 import html
 import threading
@@ -110,16 +112,19 @@ body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",Roboto,sans-serif;ba
 header{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;padding:16px}
 header h1{font-size:19px}
 .breadcrumbs{margin-top:10px;font-size:13px;display:flex;flex-wrap:wrap;align-items:center}
-.breadcrumbs a{color:#e8eafd;text-decoration:none}
+.breadcrumbs a{color:#e8eafd;text-decoration:none;margin-bottom:4px}
 .breadcrumbs a:hover{text-decoration:underline}
 .breadcrumbs .sep{opacity:.6;margin:0 2px}
+.breadcrumbs .sep{margin-bottom:4px}
 .toolbar{max-width:900px;margin:0 auto;display:flex;justify-content:space-between;align-items:center;padding:14px 16px;gap:10px}
-.toolbar .cur{color:#666;font-size:13px;word-break:break-all}
+.toolbar .cur{color:#666;font-size:13px;word-break:break-all;margin-right:10px}
 .toolbar .logout{color:#667eea;text-decoration:none;font-size:13px;white-space:nowrap}
 .container{max-width:900px;margin:0 auto;padding:0 12px 30px}
 .list{background:#fff;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.05);overflow:hidden}
 .item{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid #f0f0f0}
 .item:last-child{border-bottom:0}
+.item>*{margin-right:10px}
+.item>*:last-child{margin-right:0}
 .icon{font-size:22px;width:28px;text-align:center;flex-shrink:0}
 .name{flex:1;min-width:0}
 .name a{color:#333;text-decoration:none;word-break:break-all}
@@ -132,8 +137,15 @@ header h1{font-size:19px}
 .empty{text-align:center;color:#999;padding:48px 16px;font-size:14px}
 @media (max-width:600px){
 .item{flex-wrap:wrap}
-.size{order:3;width:100%;padding-left:38px}
+.size{order:3;width:100%;padding-left:38px;margin-right:0}
+.item>*{margin-bottom:10px}
 header h1{font-size:17px}
+}
+@supports (gap:10px){
+.toolbar .cur{margin-right:0}
+.item>*{margin-right:0;margin-bottom:0}
+.breadcrumbs a{margin-bottom:0}
+.breadcrumbs .sep{margin-bottom:0}
 }
 </style>
 </head>
@@ -256,7 +268,7 @@ def build_items(base, rel, allow_view):
 
 
 class FileHandler(BaseHTTPRequestHandler):
-    server_version = "LanFileServer/1.2.0"
+    server_version = "LanFileServer/1.3.0"
     root_dir = ""
     require_auth = False
     allow_view = True
@@ -428,8 +440,79 @@ def get_local_ip():
         return "127.0.0.1"
 
 
+NIC_FILTER_KEYWORDS = (
+    "vmware", "virtualbox", "tap", "wintun", "clash", "mihomo",
+    "tailscale", "zerotier", "vethernet", "hyper-v", "wsl", "vpn",
+)
+
+IPV4_RE = re.compile(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}")
+
+
+def _is_bad_ip(ip):
+    p = ip.split(".")
+    a, b = int(p[0]), int(p[1])
+    return (a == 127) or (a == 169 and b == 254) or (a == 198 and b in (18, 19))
+
+
+def _ip_priority(ip):
+    if ip.startswith("192.168."):
+        return 0
+    if ip.startswith("10."):
+        return 1
+    p = ip.split(".")
+    if p[0] == "172" and 16 <= int(p[1]) <= 31:
+        return 2
+    return 3
+
+
+def _parse_ipconfig(out):
+    seen = []
+    adapter = ""
+    for block in re.split(r"\r?\n\s*\r?\n", out):
+        raw_lines = block.splitlines()
+        lines = [ln.strip() for ln in raw_lines if ln.strip()]
+        if not lines:
+            continue
+        first = raw_lines[0] if raw_lines else ""
+        if first and not first[0].isspace() and first.strip().endswith(":"):
+            adapter = first.strip()
+        if any(k in adapter.lower() for k in NIC_FILTER_KEYWORDS):
+            continue
+        for line in lines:
+            if "IPv4" in line:
+                for m in IPV4_RE.finditer(line):
+                    ip = m.group(0)
+                    if not _is_bad_ip(ip) and ip not in seen:
+                        seen.append(ip)
+    seen.sort(key=_ip_priority)
+    return seen
+
+
+def get_candidate_ips():
+    if sys.platform == "win32":
+        try:
+            result = subprocess.run(
+                ["ipconfig", "/all"], capture_output=True, timeout=10,
+                creationflags=0x08000000)
+            out = result.stdout.decode("gbk", errors="replace")
+        except Exception:
+            out = ""
+        if out:
+            return _parse_ipconfig(out)
+    ip = get_local_ip()
+    if ip != "127.0.0.1" and not _is_bad_ip(ip):
+        return [ip]
+    return []
+
+
 def main():
     sg.theme("SystemDefault")
+
+    ip_list = get_candidate_ips()
+    no_lan = not ip_list
+    if not ip_list:
+        ip_list = ["127.0.0.1"]
+    default_ip = ip_list[0]
 
     layout = [
         [
@@ -446,6 +529,11 @@ def main():
             sg.Button("关于", key="-ABOUT-"),
         ],
         [
+            sg.Text("局域网IP:"),
+            sg.Combo(ip_list, default_value=default_ip, key="-IP-",
+                     readonly=True, size=(16, 1)),
+        ],
+        [
             sg.Text("用户名:"),
             sg.Input(key="-USER-", size=(12, 1)),
             sg.Text("密码:"),
@@ -457,7 +545,7 @@ def main():
         [sg.Multiline("", key="-LOG-", size=(70, 12), disabled=True, autoscroll=True)],
     ]
 
-    window = sg.Window("局域网文件库 V1.2.0", layout, finalize=True)
+    window = sg.Window("局域网文件库 V1.3.0", layout, finalize=True)
 
     server_thread = None
     http_server = None
@@ -466,6 +554,8 @@ def main():
         window["-LOG-"].print(msg)
 
     log("提示: Windows 弹防火墙时请勾选【专用 / 局域网网络】，否则其他设备无法访问")
+    if no_lan:
+        log("未检测到可用的局域网 IP，请确认已连接 WiFi/网线")
 
     while True:
         event, values = window.read()
@@ -503,8 +593,6 @@ def main():
                 log("错误: 已启用密码保护，用户名和密码不能为空")
                 continue
 
-            local_ip = get_local_ip()
-
             FileHandler.root_dir = folder
             FileHandler.require_auth = use_pass
             FileHandler.allow_view = use_view
@@ -530,7 +618,7 @@ def main():
             if not use_view:
                 log("已关闭在线预览")
             log("本机访问: http://127.0.0.1:{}".format(port))
-            log("局域网访问: http://{}:{}".format(local_ip, port))
+            log("局域网访问: http://{}:{}".format(values["-IP-"], port))
 
             window["-START-"].update(disabled=True)
             window["-STOP-"].update(disabled=False)
@@ -550,21 +638,29 @@ def main():
 
         elif event == "-COPY-":
             port_str = values["-PORT-"].strip()
-            local_ip = get_local_ip()
+            ip = values["-IP-"].strip()
             try:
                 port = int(port_str)
             except ValueError:
                 port = 8080
-            link = "http://{}:{}".format(local_ip, port)
+            link = "http://{}:{}".format(ip, port)
             try:
                 sg.clipboard_set(link)
                 log("已复制链接: {}".format(link))
             except Exception:
                 log("复制失败，请手动复制: {}".format(link))
 
+        elif event == "-IP-":
+            if http_server is not None:
+                try:
+                    port = int(values["-PORT-"].strip())
+                except ValueError:
+                    port = 8080
+                log("局域网访问: http://{}:{}".format(values["-IP-"], port))
+
         elif event == "-ABOUT-":
             sg.popup(
-                "局域网文件库 V1.2.0\n"
+                "局域网文件库 V1.3.0\n"
                 "局域网内文件共享小工具\n"
                 "反馈 Bug 邮箱：77070689@qq.com\n"
                 "温馨提示：本程序仅限局域网内使用，请勿暴露到公网",
